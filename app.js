@@ -1,7 +1,8 @@
 /**
  * CardScan — app.js
- * Handles: SW registration, theme toggle, file/camera input, OCR via Tesseract.js,
- * smart contact field parsing, vCard generation, export, and PWA install prompt.
+ * Handles: SW registration, theme toggle, file/camera input, OCR pre-processing,
+ * OCR via Tesseract.js, smart contact field parsing, vCard generation, export,
+ * and PWA install prompt.
  */
 
 'use strict';
@@ -22,7 +23,6 @@ let deferredInstallPrompt = null;
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
   deferredInstallPrompt = e;
-  // Show both the header button and the banner
   const btnInstall = document.getElementById('btnInstall');
   const banner     = document.getElementById('installBanner');
   if (btnInstall) btnInstall.style.display = '';
@@ -132,7 +132,6 @@ fileInput.addEventListener('change', () => {
   fileInput.value = '';
 });
 
-// Handle ?action=camera shortcut (from PWA shortcut)
 if (new URLSearchParams(location.search).get('action') === 'camera') {
   window.addEventListener('DOMContentLoaded', () => startCamera());
 }
@@ -196,24 +195,35 @@ async function runOCR(imageSrc) {
   const st  = $('processStatus');
 
   try {
+    // Pre-process before handing to Tesseract
+    st.textContent  = 'Pre-processing image…';
+    bar.style.width = '5%';
+    const processedSrc = await preprocessImage(imageSrc, (msg, pct) => {
+      st.textContent  = msg;
+      bar.style.width = pct + '%';
+    });
+
+    // Update the preview to show the processed image the OCR actually sees
+    $('previewImg').src = processedSrc;
+
     const worker = await Tesseract.createWorker('eng', 1, {
       logger: (m) => {
         if (m.status === 'recognizing text') {
           const pct = Math.round((m.progress || 0) * 100);
-          bar.style.width = pct + '%';
+          bar.style.width = Math.round(20 + pct * 0.8) + '%';
           st.textContent  = `Reading text… ${pct}%`;
         } else if (m.status.includes('loading')) {
           st.textContent = 'Loading OCR engine…';
-          bar.style.width = '10%';
+          bar.style.width = '22%';
         } else if (m.status.includes('initializing')) {
           st.textContent = 'Initializing…';
-          bar.style.width = '30%';
+          bar.style.width = '28%';
         }
       }
     });
 
     await worker.setParameters({ tessedit_pageseg_mode: Tesseract.PSM.AUTO });
-    const { data } = await worker.recognize(imageSrc);
+    const { data } = await worker.recognize(processedSrc);
     await worker.terminate();
 
     bar.style.width = '100%';
@@ -231,6 +241,261 @@ async function runOCR(imageSrc) {
 }
 
 
+// ── OCR Pre-Processing Pipeline ────────────────────────────────────────────────
+/**
+ * Applies a series of canvas-based transforms to maximise OCR accuracy:
+ *   1. Upscale small images to a minimum width (Tesseract likes ≥ 300 DPI equivalent)
+ *   2. Grayscale conversion
+ *   3. Contrast stretch (linear histogram normalisation)
+ *   4. Unsharp mask (sharpens blurry text edges)
+ *   5. Adaptive threshold → clean black-on-white binary image
+ *   6. Deskew (detects card rotation angle, rotates to horizontal)
+ *
+ * @param {string} src        — data-URL of the original image
+ * @param {Function} progress — (message: string, percent: number) => void
+ * @returns {Promise<string>} — data-URL of the processed image (PNG)
+ */
+async function preprocessImage(src, progress) {
+  const img = await loadImage(src);
+
+  // Step 1 — Upscale if too small
+  progress('Upscaling…', 6);
+  const MIN_WIDTH = 1800;
+  const scale = img.width < MIN_WIDTH ? MIN_WIDTH / img.width : 1;
+  const w = Math.round(img.width  * scale);
+  const h = Math.round(img.height * scale);
+
+  const canvas = document.createElement('canvas');
+  canvas.width  = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0, w, h);
+
+  // Step 2 — Grayscale
+  progress('Converting to grayscale…', 8);
+  let imageData = ctx.getImageData(0, 0, w, h);
+  toGrayscale(imageData.data);
+  ctx.putImageData(imageData, 0, 0);
+
+  // Step 3 — Contrast stretch
+  progress('Boosting contrast…', 10);
+  imageData = ctx.getImageData(0, 0, w, h);
+  contrastStretch(imageData.data);
+  ctx.putImageData(imageData, 0, 0);
+
+  // Step 4 — Unsharp mask
+  progress('Sharpening…', 13);
+  imageData = ctx.getImageData(0, 0, w, h);
+  unsharpMask(imageData.data, w, h, 1.2, 0.6);
+  ctx.putImageData(imageData, 0, 0);
+
+  // Step 5 — Adaptive threshold (Sauvola-style, block-based)
+  progress('Binarising…', 16);
+  imageData = ctx.getImageData(0, 0, w, h);
+  adaptiveThreshold(imageData.data, w, h, 32, 0.12);
+  ctx.putImageData(imageData, 0, 0);
+
+  // Step 6 — Deskew
+  progress('Detecting skew…', 19);
+  const angle = detectSkewAngle(ctx.getImageData(0, 0, w, h).data, w, h);
+  if (Math.abs(angle) > 0.3 && Math.abs(angle) < 25) {
+    progress(`Correcting ${angle.toFixed(1)}° skew…`, 20);
+    const rotated = rotateCanvas(canvas, -angle);
+    return rotated.toDataURL('image/png');
+  }
+
+  return canvas.toDataURL('image/png');
+}
+
+/** Load a data-URL or URL into an HTMLImageElement. */
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload  = () => resolve(img);
+    img.onerror = reject;
+    img.src     = src;
+  });
+}
+
+/** Convert RGBA pixel array to grayscale in-place (luminance formula). */
+function toGrayscale(data) {
+  for (let i = 0; i < data.length; i += 4) {
+    const g = Math.round(0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]);
+    data[i] = data[i + 1] = data[i + 2] = g;
+  }
+}
+
+/**
+ * Linear contrast stretch: maps [p2, p98] percentile range → [0, 255].
+ * Handles cards that were photographed in poor lighting.
+ */
+function contrastStretch(data) {
+  // Sample every 4th pixel for speed
+  const samples = [];
+  for (let i = 0; i < data.length; i += 16) samples.push(data[i]);
+  samples.sort((a, b) => a - b);
+  const lo = samples[Math.floor(samples.length * 0.02)];
+  const hi = samples[Math.floor(samples.length * 0.98)];
+  if (hi === lo) return;
+  const range = hi - lo;
+  for (let i = 0; i < data.length; i += 4) {
+    const v = Math.round(((data[i] - lo) / range) * 255);
+    data[i] = data[i + 1] = data[i + 2] = Math.max(0, Math.min(255, v));
+  }
+}
+
+/**
+ * Simple unsharp mask: blurs a copy, then blends original + (original − blurred).
+ * Sharpens soft text from phone cameras without adding noise artifacts.
+ *
+ * @param {Uint8ClampedArray} data
+ * @param {number} w
+ * @param {number} h
+ * @param {number} amount   — strength (0–2)
+ * @param {number} radius   — blur radius in fraction of width (0.002–0.01)
+ */
+function unsharpMask(data, w, h, amount, radius) {
+  const blurred = new Uint8ClampedArray(data.length);
+  // Horizontal box blur
+  const r = Math.max(1, Math.round(w * radius));
+  for (let y = 0; y < h; y++) {
+    let sum = 0;
+    for (let x = 0; x < r; x++) sum += data[(y * w + x) * 4];
+    for (let x = 0; x < w; x++) {
+      if (x + r < w) sum += data[(y * w + x + r) * 4];
+      if (x - r >= 0) sum -= data[(y * w + x - r - 1) * 4];
+      const v = Math.round(sum / Math.min(r * 2, w));
+      blurred[(y * w + x) * 4] = blurred[(y * w + x) * 4 + 1] =
+        blurred[(y * w + x) * 4 + 2] = v;
+    }
+  }
+  // Apply: sharpen = original + amount * (original - blurred)
+  for (let i = 0; i < data.length; i += 4) {
+    const v = Math.round(data[i] + amount * (data[i] - blurred[i]));
+    data[i] = data[i + 1] = data[i + 2] = Math.max(0, Math.min(255, v));
+  }
+}
+
+/**
+ * Block-based adaptive threshold (approximates Sauvola).
+ * Each block's mean determines the local threshold — handles
+ * uneven lighting / shadows across different regions of the card.
+ *
+ * @param {Uint8ClampedArray} data
+ * @param {number} w
+ * @param {number} h
+ * @param {number} blockSize  — side length of local neighbourhood (px)
+ * @param {number} k          — sensitivity (0 = mean only, higher = more aggressive)
+ */
+function adaptiveThreshold(data, w, h, blockSize, k) {
+  const half = Math.floor(blockSize / 2);
+  const out  = new Uint8ClampedArray(data.length);
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      // Compute local mean in block
+      let sum = 0, count = 0;
+      const x0 = Math.max(0, x - half), x1 = Math.min(w - 1, x + half);
+      const y0 = Math.max(0, y - half), y1 = Math.min(h - 1, y + half);
+      for (let by = y0; by <= y1; by += 2) {     // sample every 2nd row for speed
+        for (let bx = x0; bx <= x1; bx += 2) {
+          sum += data[(by * w + bx) * 4];
+          count++;
+        }
+      }
+      const mean = sum / count;
+      const threshold = mean * (1 - k);
+      const idx = (y * w + x) * 4;
+      const val = data[idx] >= threshold ? 255 : 0;
+      out[idx] = out[idx + 1] = out[idx + 2] = val;
+      out[idx + 3] = 255;
+    }
+  }
+  data.set(out);
+}
+
+/**
+ * Detect card skew angle using a Hough-like horizontal projection approach.
+ * Tries angles −20° to +20°; the angle where the projection variance is
+ * maximised corresponds to the text-line direction.
+ *
+ * @param {Uint8ClampedArray} data — binary (0 or 255) grayscale pixels
+ * @param {number} w
+ * @param {number} h
+ * @returns {number} angle in degrees (positive = clockwise tilt)
+ */
+function detectSkewAngle(data, w, h) {
+  // Work on a down-sampled version for speed
+  const SCALE = 4;
+  const sw = Math.floor(w / SCALE);
+  const sh = Math.floor(h / SCALE);
+  const small = new Uint8Array(sw * sh);
+  for (let y = 0; y < sh; y++) {
+    for (let x = 0; x < sw; x++) {
+      small[y * sw + x] = data[(y * SCALE * w + x * SCALE) * 4] < 128 ? 1 : 0;
+    }
+  }
+
+  let bestAngle = 0;
+  let bestVariance = -1;
+
+  for (let deg = -20; deg <= 20; deg += 0.5) {
+    const rad = (deg * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const cx  = sw / 2;
+    const cy  = sh / 2;
+
+    // Project onto rotated horizontal axis
+    const rows = new Float32Array(sh);
+    for (let y = 0; y < sh; y++) {
+      let cnt = 0;
+      for (let x = 0; x < sw; x++) {
+        if (small[y * sw + x]) {
+          const ry = Math.round(-(x - cx) * sin + (y - cy) * cos + cy);
+          if (ry >= 0 && ry < sh) rows[ry]++;
+          cnt++;
+        }
+      }
+    }
+
+    // Variance of the row-projection histogram
+    let mean = 0;
+    for (let i = 0; i < sh; i++) mean += rows[i];
+    mean /= sh;
+    let variance = 0;
+    for (let i = 0; i < sh; i++) variance += (rows[i] - mean) ** 2;
+
+    if (variance > bestVariance) {
+      bestVariance = variance;
+      bestAngle    = deg;
+    }
+  }
+
+  return bestAngle;
+}
+
+/** Rotate a canvas by `angle` degrees around its centre; returns a new canvas. */
+function rotateCanvas(src, angle) {
+  const rad = (angle * Math.PI) / 180;
+  const cos = Math.abs(Math.cos(rad));
+  const sin = Math.abs(Math.sin(rad));
+  const nw  = Math.round(src.width * cos + src.height * sin);
+  const nh  = Math.round(src.width * sin + src.height * cos);
+
+  const dst = document.createElement('canvas');
+  dst.width  = nw;
+  dst.height = nh;
+  const ctx = dst.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, nw, nh);
+  ctx.translate(nw / 2, nh / 2);
+  ctx.rotate(rad);
+  ctx.drawImage(src, -src.width / 2, -src.height / 2);
+  return dst;
+}
+
+
 // ── Smart Contact Parser ───────────────────────────────────────────────────────
 function parseContactFields(text) {
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
@@ -238,7 +503,7 @@ function parseContactFields(text) {
   const emailMatch = text.match(/[\w.+-]+@[\w-]+\.[a-z]{2,}/i);
   $('fEmail').value = emailMatch ? emailMatch[0] : '';
 
-  const phoneRe = /(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}(?:[\s]*(?:x|ext)\.?[\s]*\d{1,5})?/g;
+  const phoneRe = /(?:\+?1[-.\\s]?)?\(?\d{3}\)?[-.\\s]\d{3}[-.\\s]\d{4}(?:[\s]*(?:x|ext)\.?[\s]*\d{1,5})?/g;
   const phones  = [...text.matchAll(phoneRe)].map(m => m[0].trim());
   $('fPhone').value  = phones[0] || '';
   $('fPhone2').value = phones[1] || '';
