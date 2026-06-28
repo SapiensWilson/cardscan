@@ -2,7 +2,7 @@
  * CardScan — app.js
  * Handles: SW registration, theme toggle, file/camera input, OCR pre-processing,
  * OCR via Tesseract.js, smart contact field parsing, vCard generation, export,
- * and PWA install prompt.
+ * PWA install prompt, and scan history (localStorage).
  */
 
 'use strict';
@@ -52,6 +52,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnDismissBanner')?.addEventListener('click', () => {
     document.getElementById('installBanner').style.display = 'none';
   });
+  initHistory();
 });
 
 
@@ -107,6 +108,192 @@ function showToast(msg) {
   $('toastMsg').textContent = msg;
   t.classList.add('show');
   setTimeout(() => t.classList.remove('show'), 3200);
+}
+
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+
+// ── Scan History ───────────────────────────────────────────────────────────────
+const HISTORY_KEY   = 'cardscan_history';
+const HISTORY_LIMIT = 50;
+const THUMB_WIDTH   = 120;
+
+function loadHistory() {
+  try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); }
+  catch { return []; }
+}
+
+function saveHistory(entries) {
+  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(entries)); }
+  catch (e) { console.warn('[History] localStorage write failed:', e); }
+}
+
+function makeThumbnail(src) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width  = THUMB_WIDTH;
+      canvas.height = Math.round(THUMB_WIDTH * (img.height / img.width));
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL('image/jpeg', 0.7));
+    };
+    img.onerror = () => resolve(null);
+    img.src = src;
+  });
+}
+
+async function saveToHistory(imageSrc) {
+  const get = (id) => $(id)?.value.trim() ?? '';
+  const fields = {
+    name:     get('fName'),
+    title:    get('fTitle'),
+    company:  get('fCompany'),
+    phone:    get('fPhone'),
+    phone2:   get('fPhone2'),
+    email:    get('fEmail'),
+    website:  get('fWebsite'),
+    address:  get('fAddress'),
+    linkedin: get('fLinkedIn'),
+    notes:    get('fNotes'),
+  };
+  const thumb   = imageSrc ? await makeThumbnail(imageSrc) : null;
+  const entry   = { id: Date.now(), scannedAt: new Date().toISOString(), fields, thumb };
+  const history = loadHistory();
+  history.unshift(entry);
+  if (history.length > HISTORY_LIMIT) history.splice(HISTORY_LIMIT);
+  saveHistory(history);
+  updateHistoryBadge(history.length);
+  return entry;
+}
+
+function updateHistoryBadge(count) {
+  const badge = $('historyBadge');
+  if (!badge) return;
+  badge.textContent   = count;
+  badge.style.display = count > 0 ? '' : 'none';
+}
+
+function openHistory() {
+  $('historyDrawer').classList.add('open');
+  $('historyDrawer').setAttribute('aria-hidden', 'false');
+  $('historyBackdrop').classList.add('visible');
+  document.body.style.overflow = 'hidden';
+  renderHistory();
+}
+
+function closeHistory() {
+  $('historyDrawer').classList.remove('open');
+  $('historyDrawer').setAttribute('aria-hidden', 'true');
+  $('historyBackdrop').classList.remove('visible');
+  document.body.style.overflow = '';
+}
+
+function renderHistory() {
+  const list    = $('historyList');
+  const empty   = $('historyEmpty');
+  const history = loadHistory();
+
+  updateHistoryBadge(history.length);
+
+  if (!history.length) {
+    list.innerHTML      = '';
+    empty.style.display = '';
+    return;
+  }
+  empty.style.display = 'none';
+
+  list.innerHTML = history.map((entry) => {
+    const f    = entry.fields;
+    const name = f.name || 'Unknown';
+    const sub  = [f.title, f.company].filter(Boolean).join(' · ') || f.email || f.phone || '';
+    const date = new Date(entry.scannedAt).toLocaleDateString(undefined, {
+      month: 'short', day: 'numeric', year: 'numeric'
+    });
+    const thumb = entry.thumb
+      ? `<img class="history-thumb" src="${entry.thumb}" alt="" loading="lazy">`
+      : `<div class="history-thumb history-thumb-ph" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="6" width="20" height="12" rx="2"/></svg></div>`;
+
+    return `<div class="history-item" data-id="${entry.id}">
+      ${thumb}
+      <div class="history-item-info">
+        <p class="history-item-name">${escHtml(name)}</p>
+        ${sub ? `<p class="history-item-sub">${escHtml(sub)}</p>` : ''}
+        <p class="history-item-date">${date}</p>
+      </div>
+      <div class="history-item-actions">
+        <button class="btn btn-ghost btn-sm" data-action="reexport" data-id="${entry.id}" title="Download vCard">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        </button>
+        <button class="btn btn-ghost btn-sm" data-action="delete" data-id="${entry.id}" title="Delete">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+        </button>
+      </div>
+    </div>`;
+  }).join('');
+
+  list.onclick = (e) => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    const id     = parseInt(btn.dataset.id, 10);
+    const action = btn.dataset.action;
+    if (action === 'delete')   historyDelete(id);
+    if (action === 'reexport') historyReExport(id);
+  };
+}
+
+function historyDelete(id) {
+  saveHistory(loadHistory().filter(e => e.id !== id));
+  renderHistory();
+  showToast('Entry deleted');
+}
+
+function historyReExport(id) {
+  const entry = loadHistory().find(e => e.id === id);
+  if (!entry) return;
+  const f     = entry.fields;
+  const name  = f.name || 'contact';
+  const parts = name.split(/\s+/);
+  const last  = parts.length > 1 ? parts[parts.length - 1] : '';
+  const first = parts.length > 1 ? parts.slice(0, -1).join(' ') : parts[0] || '';
+
+  const lines = ['BEGIN:VCARD', 'VERSION:3.0', `N:${last};${first};;;`, `FN:${name}`];
+  if (f.title)    lines.push(`TITLE:${f.title}`);
+  if (f.company)  lines.push(`ORG:${f.company}`);
+  if (f.phone)    lines.push(`TEL;TYPE=WORK,VOICE:${f.phone}`);
+  if (f.phone2)   lines.push(`TEL;TYPE=CELL:${f.phone2}`);
+  if (f.email)    lines.push(`EMAIL;TYPE=INTERNET:${f.email}`);
+  if (f.website)  lines.push(`URL:${f.website}`);
+  if (f.address)  lines.push(`ADR;TYPE=WORK:;;${f.address};;;;`);
+  if (f.linkedin) lines.push(`X-SOCIALPROFILE;type=linkedin:${f.linkedin}`);
+  if (f.notes)    lines.push(`NOTE:${f.notes}`);
+  lines.push('END:VCARD');
+
+  const blob = new Blob([lines.join('\r\n') + '\r\n'], { type: 'text/vcard;charset=utf-8' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = name.replace(/\s+/g, '-') + '.vcf';
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast('vCard downloaded!');
+}
+
+function initHistory() {
+  $('btnHistory')?.addEventListener('click', openHistory);
+  $('btnCloseHistory')?.addEventListener('click', closeHistory);
+  $('historyBackdrop')?.addEventListener('click', closeHistory);
+  $('btnClearHistory')?.addEventListener('click', () => {
+    if (!confirm('Delete all scan history? This cannot be undone.')) return;
+    saveHistory([]);
+    renderHistory();
+    showToast('History cleared');
+  });
+  updateHistoryBadge(loadHistory().length);
 }
 
 
@@ -195,7 +382,6 @@ async function runOCR(imageSrc) {
   const st  = $('processStatus');
 
   try {
-    // Pre-process before handing to Tesseract
     st.textContent  = 'Pre-processing image…';
     bar.style.width = '5%';
     const processedSrc = await preprocessImage(imageSrc, (msg, pct) => {
@@ -203,7 +389,6 @@ async function runOCR(imageSrc) {
       bar.style.width = pct + '%';
     });
 
-    // Update the preview to show the processed image the OCR actually sees
     $('previewImg').src = processedSrc;
 
     const worker = await Tesseract.createWorker('eng', 1, {
@@ -242,23 +427,9 @@ async function runOCR(imageSrc) {
 
 
 // ── OCR Pre-Processing Pipeline ────────────────────────────────────────────────
-/**
- * Applies a series of canvas-based transforms to maximise OCR accuracy:
- *   1. Upscale small images to a minimum width (Tesseract likes ≥ 300 DPI equivalent)
- *   2. Grayscale conversion
- *   3. Contrast stretch (linear histogram normalisation)
- *   4. Unsharp mask (sharpens blurry text edges)
- *   5. Adaptive threshold → clean black-on-white binary image
- *   6. Deskew (detects card rotation angle, rotates to horizontal)
- *
- * @param {string} src        — data-URL of the original image
- * @param {Function} progress — (message: string, percent: number) => void
- * @returns {Promise<string>} — data-URL of the processed image (PNG)
- */
 async function preprocessImage(src, progress) {
   const img = await loadImage(src);
 
-  // Step 1 — Upscale if too small
   progress('Upscaling…', 6);
   const MIN_WIDTH = 1800;
   const scale = img.width < MIN_WIDTH ? MIN_WIDTH / img.width : 1;
@@ -271,31 +442,26 @@ async function preprocessImage(src, progress) {
   const ctx = canvas.getContext('2d');
   ctx.drawImage(img, 0, 0, w, h);
 
-  // Step 2 — Grayscale
   progress('Converting to grayscale…', 8);
   let imageData = ctx.getImageData(0, 0, w, h);
   toGrayscale(imageData.data);
   ctx.putImageData(imageData, 0, 0);
 
-  // Step 3 — Contrast stretch
   progress('Boosting contrast…', 10);
   imageData = ctx.getImageData(0, 0, w, h);
   contrastStretch(imageData.data);
   ctx.putImageData(imageData, 0, 0);
 
-  // Step 4 — Unsharp mask
   progress('Sharpening…', 13);
   imageData = ctx.getImageData(0, 0, w, h);
   unsharpMask(imageData.data, w, h, 1.2, 0.6);
   ctx.putImageData(imageData, 0, 0);
 
-  // Step 5 — Adaptive threshold (Sauvola-style, block-based)
   progress('Binarising…', 16);
   imageData = ctx.getImageData(0, 0, w, h);
   adaptiveThreshold(imageData.data, w, h, 32, 0.12);
   ctx.putImageData(imageData, 0, 0);
 
-  // Step 6 — Deskew
   progress('Detecting skew…', 19);
   const angle = detectSkewAngle(ctx.getImageData(0, 0, w, h).data, w, h);
   if (Math.abs(angle) > 0.3 && Math.abs(angle) < 25) {
@@ -307,7 +473,6 @@ async function preprocessImage(src, progress) {
   return canvas.toDataURL('image/png');
 }
 
-/** Load a data-URL or URL into an HTMLImageElement. */
 function loadImage(src) {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -317,7 +482,6 @@ function loadImage(src) {
   });
 }
 
-/** Convert RGBA pixel array to grayscale in-place (luminance formula). */
 function toGrayscale(data) {
   for (let i = 0; i < data.length; i += 4) {
     const g = Math.round(0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]);
@@ -325,12 +489,7 @@ function toGrayscale(data) {
   }
 }
 
-/**
- * Linear contrast stretch: maps [p2, p98] percentile range → [0, 255].
- * Handles cards that were photographed in poor lighting.
- */
 function contrastStretch(data) {
-  // Sample every 4th pixel for speed
   const samples = [];
   for (let i = 0; i < data.length; i += 16) samples.push(data[i]);
   samples.sort((a, b) => a - b);
@@ -344,19 +503,8 @@ function contrastStretch(data) {
   }
 }
 
-/**
- * Simple unsharp mask: blurs a copy, then blends original + (original − blurred).
- * Sharpens soft text from phone cameras without adding noise artifacts.
- *
- * @param {Uint8ClampedArray} data
- * @param {number} w
- * @param {number} h
- * @param {number} amount   — strength (0–2)
- * @param {number} radius   — blur radius in fraction of width (0.002–0.01)
- */
 function unsharpMask(data, w, h, amount, radius) {
   const blurred = new Uint8ClampedArray(data.length);
-  // Horizontal box blur
   const r = Math.max(1, Math.round(w * radius));
   for (let y = 0; y < h; y++) {
     let sum = 0;
@@ -369,44 +517,30 @@ function unsharpMask(data, w, h, amount, radius) {
         blurred[(y * w + x) * 4 + 2] = v;
     }
   }
-  // Apply: sharpen = original + amount * (original - blurred)
   for (let i = 0; i < data.length; i += 4) {
     const v = Math.round(data[i] + amount * (data[i] - blurred[i]));
     data[i] = data[i + 1] = data[i + 2] = Math.max(0, Math.min(255, v));
   }
 }
 
-/**
- * Block-based adaptive threshold (approximates Sauvola).
- * Each block's mean determines the local threshold — handles
- * uneven lighting / shadows across different regions of the card.
- *
- * @param {Uint8ClampedArray} data
- * @param {number} w
- * @param {number} h
- * @param {number} blockSize  — side length of local neighbourhood (px)
- * @param {number} k          — sensitivity (0 = mean only, higher = more aggressive)
- */
 function adaptiveThreshold(data, w, h, blockSize, k) {
   const half = Math.floor(blockSize / 2);
   const out  = new Uint8ClampedArray(data.length);
-
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      // Compute local mean in block
       let sum = 0, count = 0;
       const x0 = Math.max(0, x - half), x1 = Math.min(w - 1, x + half);
       const y0 = Math.max(0, y - half), y1 = Math.min(h - 1, y + half);
-      for (let by = y0; by <= y1; by += 2) {     // sample every 2nd row for speed
+      for (let by = y0; by <= y1; by += 2) {
         for (let bx = x0; bx <= x1; bx += 2) {
           sum += data[(by * w + bx) * 4];
           count++;
         }
       }
-      const mean = sum / count;
+      const mean      = sum / count;
       const threshold = mean * (1 - k);
-      const idx = (y * w + x) * 4;
-      const val = data[idx] >= threshold ? 255 : 0;
+      const idx       = (y * w + x) * 4;
+      const val       = data[idx] >= threshold ? 255 : 0;
       out[idx] = out[idx + 1] = out[idx + 2] = val;
       out[idx + 3] = 255;
     }
@@ -414,78 +548,44 @@ function adaptiveThreshold(data, w, h, blockSize, k) {
   data.set(out);
 }
 
-/**
- * Detect card skew angle using a Hough-like horizontal projection approach.
- * Tries angles −20° to +20°; the angle where the projection variance is
- * maximised corresponds to the text-line direction.
- *
- * @param {Uint8ClampedArray} data — binary (0 or 255) grayscale pixels
- * @param {number} w
- * @param {number} h
- * @returns {number} angle in degrees (positive = clockwise tilt)
- */
 function detectSkewAngle(data, w, h) {
-  // Work on a down-sampled version for speed
   const SCALE = 4;
   const sw = Math.floor(w / SCALE);
   const sh = Math.floor(h / SCALE);
   const small = new Uint8Array(sw * sh);
-  for (let y = 0; y < sh; y++) {
-    for (let x = 0; x < sw; x++) {
+  for (let y = 0; y < sh; y++)
+    for (let x = 0; x < sw; x++)
       small[y * sw + x] = data[(y * SCALE * w + x * SCALE) * 4] < 128 ? 1 : 0;
-    }
-  }
 
-  let bestAngle = 0;
-  let bestVariance = -1;
-
+  let bestAngle = 0, bestVariance = -1;
   for (let deg = -20; deg <= 20; deg += 0.5) {
     const rad = (deg * Math.PI) / 180;
-    const cos = Math.cos(rad);
-    const sin = Math.sin(rad);
-    const cx  = sw / 2;
-    const cy  = sh / 2;
-
-    // Project onto rotated horizontal axis
+    const cos = Math.cos(rad), sin = Math.sin(rad);
+    const cx  = sw / 2, cy = sh / 2;
     const rows = new Float32Array(sh);
-    for (let y = 0; y < sh; y++) {
-      let cnt = 0;
-      for (let x = 0; x < sw; x++) {
+    for (let y = 0; y < sh; y++)
+      for (let x = 0; x < sw; x++)
         if (small[y * sw + x]) {
           const ry = Math.round(-(x - cx) * sin + (y - cy) * cos + cy);
           if (ry >= 0 && ry < sh) rows[ry]++;
-          cnt++;
         }
-      }
-    }
-
-    // Variance of the row-projection histogram
     let mean = 0;
     for (let i = 0; i < sh; i++) mean += rows[i];
     mean /= sh;
     let variance = 0;
     for (let i = 0; i < sh; i++) variance += (rows[i] - mean) ** 2;
-
-    if (variance > bestVariance) {
-      bestVariance = variance;
-      bestAngle    = deg;
-    }
+    if (variance > bestVariance) { bestVariance = variance; bestAngle = deg; }
   }
-
   return bestAngle;
 }
 
-/** Rotate a canvas by `angle` degrees around its centre; returns a new canvas. */
 function rotateCanvas(src, angle) {
   const rad = (angle * Math.PI) / 180;
-  const cos = Math.abs(Math.cos(rad));
-  const sin = Math.abs(Math.sin(rad));
+  const cos = Math.abs(Math.cos(rad)), sin = Math.abs(Math.sin(rad));
   const nw  = Math.round(src.width * cos + src.height * sin);
   const nh  = Math.round(src.width * sin + src.height * cos);
-
   const dst = document.createElement('canvas');
-  dst.width  = nw;
-  dst.height = nh;
+  dst.width = nw; dst.height = nh;
   const ctx = dst.getContext('2d');
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, nw, nh);
@@ -503,7 +603,7 @@ function parseContactFields(text) {
   const emailMatch = text.match(/[\w.+-]+@[\w-]+\.[a-z]{2,}/i);
   $('fEmail').value = emailMatch ? emailMatch[0] : '';
 
-  const phoneRe = /(?:\+?1[-.\\s]?)?\(?\d{3}\)?[-.\\s]\d{3}[-.\\s]\d{4}(?:[\s]*(?:x|ext)\.?[\s]*\d{1,5})?/g;
+  const phoneRe = /(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}(?:[\s]*(?:x|ext)\.?[\s]*\d{1,5})?/g;
   const phones  = [...text.matchAll(phoneRe)].map(m => m[0].trim());
   $('fPhone').value  = phones[0] || '';
   $('fPhone2').value = phones[1] || '';
@@ -513,9 +613,7 @@ function parseContactFields(text) {
   if (urlMatch) {
     const url = urlMatch[0];
     $('fWebsite').value = url.startsWith('http') ? url : 'https://' + url;
-  } else {
-    $('fWebsite').value = '';
-  }
+  } else { $('fWebsite').value = ''; }
 
   const liMatch = text.match(/linkedin\.com\/in\/[\w-]+/i);
   $('fLinkedIn').value = liMatch ? liMatch[0] : '';
@@ -526,9 +624,7 @@ function parseContactFields(text) {
     const idx   = lines.indexOf(addrLine);
     const parts = [idx > 0 ? lines[idx - 1] : '', addrLine].filter(Boolean);
     $('fAddress').value = parts.join(', ');
-  } else {
-    $('fAddress').value = '';
-  }
+  } else { $('fAddress').value = ''; }
 
   const usedValues = [
     emailMatch && emailMatch[0], phones[0], phones[1],
@@ -549,13 +645,13 @@ function parseContactFields(text) {
 
   const titleKw = /\b(vp|ceo|cto|cfo|coo|cmo|president|director|manager|engineer|developer|consultant|analyst|officer|founder|partner|associate|senior|junior|lead|principal|head|chief|advisor|specialist|coordinator|supervisor|executive)\b/i;
 
-  const name       = nameCandidates[0] || '';
-  const titleLine  = cleanLines.find(l => l !== name && titleKw.test(l));
-  const compLine   = cleanLines.find(l => l !== name && l !== titleLine && l.length > 1);
+  const name      = nameCandidates[0] || '';
+  const titleLine = cleanLines.find(l => l !== name && titleKw.test(l));
+  const compLine  = cleanLines.find(l => l !== name && l !== titleLine && l.length > 1);
 
   $('fName').value    = name;
-  $('fTitle').value   = titleLine  || '';
-  $('fCompany').value = compLine   || '';
+  $('fTitle').value   = titleLine || '';
+  $('fCompany').value = compLine  || '';
   $('fNotes').value   = '';
 }
 
@@ -588,7 +684,7 @@ $('btnScanAnother').addEventListener('click', resetApp);
 
 // ── vCard Preview ──────────────────────────────────────────────────────────────
 function buildVcardPreview() {
-  const get = (id) => $(id).value.trim();
+  const get  = (id) => $(id).value.trim();
   const name = get('fName') || 'No Name';
 
   $('vcName').textContent    = name;
@@ -623,11 +719,7 @@ function generateVcf() {
   const last  = parts.length > 1 ? parts[parts.length - 1] : '';
   const first = parts.length > 1 ? parts.slice(0, -1).join(' ') : parts[0] || '';
 
-  const lines = [
-    'BEGIN:VCARD', 'VERSION:3.0',
-    `N:${last};${first};;;`,
-    `FN:${name}`,
-  ];
+  const lines = ['BEGIN:VCARD', 'VERSION:3.0', `N:${last};${first};;;`, `FN:${name}`];
   if (get('fTitle'))    lines.push(`TITLE:${get('fTitle')}`);
   if (get('fCompany'))  lines.push(`ORG:${get('fCompany')}`);
   if (get('fPhone'))    lines.push(`TEL;TYPE=WORK,VOICE:${get('fPhone')}`);
@@ -643,7 +735,8 @@ function generateVcf() {
 
 
 // ── Export Actions ─────────────────────────────────────────────────────────────
-$('btnVcf').addEventListener('click', () => {
+$('btnVcf').addEventListener('click', async () => {
+  await saveToHistory(currentImageData);
   const blob = new Blob([generateVcf()], { type: 'text/vcard;charset=utf-8' });
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement('a');
@@ -651,14 +744,15 @@ $('btnVcf').addEventListener('click', () => {
   a.download = ($('fName').value.trim().replace(/\s+/g, '-') || 'contact') + '.vcf';
   a.click();
   URL.revokeObjectURL(url);
-  showToast('vCard downloaded!');
+  showToast('vCard downloaded — saved to history!');
 });
 
-$('btnCopyText').addEventListener('click', () => {
+$('btnCopyText').addEventListener('click', async () => {
+  await saveToHistory(currentImageData);
   const get  = (id) => $(id).value.trim();
   const text = ['fName','fTitle','fCompany','fPhone','fPhone2','fEmail','fWebsite','fAddress','fLinkedIn','fNotes']
     .map(get).filter(Boolean).join('\n');
   navigator.clipboard.writeText(text)
-    .then(() => showToast('Copied to clipboard!'))
+    .then(() => showToast('Copied — saved to history!'))
     .catch(() => showToast('Copy failed — please copy manually.'));
 });
