@@ -201,6 +201,7 @@ main { max-width:760px; width:100%; margin-inline:auto; padding:var(--space-10) 
 .btn-success:hover  { background:var(--color-success-hover); box-shadow:var(--shadow-sm); }
 .btn-ghost { background:transparent; color:var(--color-text-muted); padding:var(--space-3) var(--space-4); }
 .btn-ghost:hover { background:var(--color-surface-offset); color:var(--color-text); }
+.btn-sm { padding:var(--space-2) var(--space-3); font-size:var(--text-xs); }
 
 .camera-wrapper {
   border-radius:var(--radius-xl); overflow:hidden; background:#000;
@@ -308,3 +309,147 @@ main { max-width:760px; width:100%; margin-inline:auto; padding:var(--space-10) 
 .toast.show { transform:translateY(0); opacity:1; }
 
 footer { padding:var(--space-5) var(--space-6); text-align:center; color:var(--color-text-faint); font-size:var(--text-xs); border-top:1px solid var(--color-divider); }
+
+
+/* ============================================================
+   Scan History — drawer, backdrop, items, badge
+   ============================================================ */
+
+/* History button in header */
+.history-btn {
+  position: relative;
+  width: 36px; height: 36px;
+  border-radius: var(--radius-md);
+  display: flex; align-items: center; justify-content: center;
+  padding: 0;
+}
+
+/* Badge counter on the history button */
+.history-badge {
+  position: absolute;
+  top: 2px; right: 2px;
+  min-width: 16px; height: 16px;
+  padding: 0 4px;
+  background: var(--color-primary);
+  color: white;
+  font-size: 10px; font-weight: 700;
+  border-radius: var(--radius-full);
+  display: flex; align-items: center; justify-content: center;
+  pointer-events: none;
+  line-height: 1;
+}
+
+/* Backdrop — covers page behind the open drawer */
+.history-backdrop {
+  position: fixed; inset: 0;
+  background: oklch(0.1 0 0 / 0.45);
+  z-index: 200;
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.28s ease;
+}
+.history-backdrop.visible {
+  opacity: 1; pointer-events: auto;
+}
+
+/* Drawer panel — slides in from the right */
+.history-drawer {
+  position: fixed;
+  top: 0; right: 0;
+  width: min(400px, 92vw);
+  height: 100dvh;
+  background: var(--color-surface);
+  border-left: 1px solid var(--color-divider);
+  box-shadow: var(--shadow-lg);
+  z-index: 300;
+  display: flex; flex-direction: column;
+  transform: translateX(100%);
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  overflow: hidden;
+}
+.history-drawer.open {
+  transform: translateX(0);
+}
+
+/* Drawer header */
+.history-drawer-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: var(--space-5) var(--space-5) var(--space-4);
+  border-bottom: 1px solid var(--color-divider);
+  flex-shrink: 0;
+}
+.history-drawer-header h2 {
+  font-size: var(--text-base); font-weight: 600;
+}
+
+/* Scrollable list */
+.history-list {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--space-2) 0;
+}
+
+/* Empty state */
+.history-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: var(--space-4);
+  height: 100%;
+  padding: var(--space-8);
+  color: var(--color-text-muted);
+  text-align: center;
+  font-size: var(--text-sm);
+  line-height: 1.6;
+}
+
+/* Individual history row */
+.history-item {
+  display: flex; align-items: center; gap: var(--space-3);
+  padding: var(--space-3) var(--space-5);
+  border-bottom: 1px solid var(--color-divider);
+  transition: background var(--transition-interactive);
+}
+.history-item:last-child { border-bottom: none; }
+.history-item:hover { background: var(--color-surface-offset); }
+
+/* Card thumbnail */
+.history-thumb {
+  width: 56px; height: 36px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  flex-shrink: 0;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-offset);
+}
+.history-thumb-ph {
+  display: flex; align-items: center; justify-content: center;
+  color: var(--color-text-faint);
+}
+
+/* Text info block */
+.history-item-info {
+  flex: 1; min-width: 0;
+}
+.history-item-name {
+  font-size: var(--text-sm); font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.history-item-sub {
+  font-size: var(--text-xs); color: var(--color-text-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  margin-top: 1px;
+}
+.history-item-date {
+  font-size: var(--text-xs); color: var(--color-text-faint);
+  margin-top: 2px;
+}
+
+/* Per-item action buttons */
+.history-item-actions {
+  display: flex; gap: var(--space-1); flex-shrink: 0;
+}
+.history-item-actions .btn-ghost {
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  opacity: 0.6;
+}
+.history-item-actions .btn-ghost:hover { opacity: 1; }
