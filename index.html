@@ -32,6 +32,10 @@
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
       100% Local
     </span>
+    <button class="btn btn-ghost history-btn" id="btnHistory" aria-label="View scan history" title="Scan History">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v4l3 3"/><path d="M3.05 11a9 9 0 1 0 .5-3"/><polyline points="1 4 3 6 5 4"/></svg>
+      <span class="history-badge" id="historyBadge" style="display:none">0</span>
+    </button>
     <button class="btn btn-secondary" id="btnInstall" style="display:none" aria-label="Install CardScan app">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
       Install
@@ -60,6 +64,30 @@
     </div>
   </div>
 </div>
+
+<!-- History backdrop -->
+<div class="history-backdrop" id="historyBackdrop"></div>
+
+<!-- History drawer -->
+<aside class="history-drawer" id="historyDrawer" aria-hidden="true" aria-label="Scan history">
+  <div class="history-drawer-header">
+    <h2>Scan History</h2>
+    <div style="display:flex;gap:var(--space-2);align-items:center">
+      <button class="btn btn-ghost btn-sm" id="btnClearHistory" type="button">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+        Clear all
+      </button>
+      <button class="btn btn-ghost" id="btnCloseHistory" type="button" aria-label="Close history">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+  </div>
+  <div class="history-list" id="historyList"></div>
+  <div class="history-empty" id="historyEmpty">
+    <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" opacity="0.25"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M6 14h.01M10 10h4M10 14h2"/></svg>
+    <p>No scans yet.<br>Scan a card to get started.</p>
+  </div>
+</aside>
 
 <main>
   <div class="steps" role="list" aria-label="Progress steps">
