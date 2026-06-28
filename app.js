@@ -1,12 +1,61 @@
 /**
  * CardScan — app.js
- * Handles: theme toggle, file/camera input, OCR via Tesseract.js,
- * smart contact field parsing, vCard generation, and export.
+ * Handles: SW registration, theme toggle, file/camera input, OCR via Tesseract.js,
+ * smart contact field parsing, vCard generation, export, and PWA install prompt.
  */
 
 'use strict';
 
-// ── Theme Toggle ──────────────────────────────────────────────────────────────
+// ── Service Worker Registration ────────────────────────────────────────────────
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js')
+      .then(reg => console.log('[SW] Registered, scope:', reg.scope))
+      .catch(err => console.warn('[SW] Registration failed:', err));
+  });
+}
+
+
+// ── PWA Install Prompt ─────────────────────────────────────────────────────────
+let deferredInstallPrompt = null;
+
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  // Show both the header button and the banner
+  const btnInstall = document.getElementById('btnInstall');
+  const banner     = document.getElementById('installBanner');
+  if (btnInstall) btnInstall.style.display = '';
+  if (banner)     banner.style.display = '';
+});
+
+window.addEventListener('appinstalled', () => {
+  deferredInstallPrompt = null;
+  const btnInstall = document.getElementById('btnInstall');
+  const banner     = document.getElementById('installBanner');
+  if (btnInstall) btnInstall.style.display = 'none';
+  if (banner)     banner.style.display = 'none';
+  showToast('CardScan installed! ✓');
+});
+
+async function triggerInstall() {
+  if (!deferredInstallPrompt) return;
+  deferredInstallPrompt.prompt();
+  const { outcome } = await deferredInstallPrompt.userChoice;
+  console.log('[PWA] Install outcome:', outcome);
+  deferredInstallPrompt = null;
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('btnInstall')?.addEventListener('click', triggerInstall);
+  document.getElementById('btnInstallBanner')?.addEventListener('click', triggerInstall);
+  document.getElementById('btnDismissBanner')?.addEventListener('click', () => {
+    document.getElementById('installBanner').style.display = 'none';
+  });
+});
+
+
+// ── Theme Toggle ───────────────────────────────────────────────────────────────
 (function initTheme() {
   const btn  = document.querySelector('[data-theme-toggle]');
   const root = document.documentElement;
@@ -30,13 +79,13 @@
 })();
 
 
-// ── State ─────────────────────────────────────────────────────────────────────
+// ── State ──────────────────────────────────────────────────────────────────────
 let currentImageData = null;
 let cameraStream     = null;
 let facingMode       = 'environment';
 
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
 
 function showPanel(id) {
@@ -48,7 +97,7 @@ function setStep(n) {
   [1, 2, 3].forEach(i => {
     const el = $('s' + i);
     el.classList.remove('active', 'done');
-    if (i < n)       el.classList.add('done');
+    if (i < n)        el.classList.add('done');
     else if (i === n) el.classList.add('active');
   });
 }
@@ -61,7 +110,7 @@ function showToast(msg) {
 }
 
 
-// ── File Upload & Drag-Drop ───────────────────────────────────────────────────
+// ── File Upload & Drag-Drop ────────────────────────────────────────────────────
 const dropZone = $('dropZone');
 const fileInput = $('fileInput');
 
@@ -83,8 +132,13 @@ fileInput.addEventListener('change', () => {
   fileInput.value = '';
 });
 
+// Handle ?action=camera shortcut (from PWA shortcut)
+if (new URLSearchParams(location.search).get('action') === 'camera') {
+  window.addEventListener('DOMContentLoaded', () => startCamera());
+}
 
-// ── Camera ────────────────────────────────────────────────────────────────────
+
+// ── Camera ─────────────────────────────────────────────────────────────────────
 $('btnCamera').addEventListener('click', startCamera);
 $('btnStopCamera').addEventListener('click', stopCamera);
 $('btnCapture').addEventListener('click', captureFrame);
@@ -124,7 +178,7 @@ function captureFrame() {
 }
 
 
-// ── Image → OCR Pipeline ──────────────────────────────────────────────────────
+// ── Image → OCR Pipeline ───────────────────────────────────────────────────────
 function processFile(file) {
   const reader = new FileReader();
   reader.onload = (e) => {
@@ -177,16 +231,10 @@ async function runOCR(imageSrc) {
 }
 
 
-// ── Smart Contact Parser ──────────────────────────────────────────────────────
-/**
- * Extracts structured contact fields from raw OCR text using regex heuristics.
- * Structured fields (email, phone, URL) are pulled first so their lines can be
- * excluded when inferring name / title / company.
- */
+// ── Smart Contact Parser ───────────────────────────────────────────────────────
 function parseContactFields(text) {
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
 
-  // Structured fields
   const emailMatch = text.match(/[\w.+-]+@[\w-]+\.[a-z]{2,}/i);
   $('fEmail').value = emailMatch ? emailMatch[0] : '';
 
@@ -207,7 +255,6 @@ function parseContactFields(text) {
   const liMatch = text.match(/linkedin\.com\/in\/[\w-]+/i);
   $('fLinkedIn').value = liMatch ? liMatch[0] : '';
 
-  // Address — US state + ZIP heuristic
   const addrRe   = /\b([A-Z]{2})\s+(\d{5}(?:-\d{4})?)\b/;
   const addrLine = lines.find(l => addrRe.test(l));
   if (addrLine) {
@@ -218,7 +265,6 @@ function parseContactFields(text) {
     $('fAddress').value = '';
   }
 
-  // Filter lines already claimed by structured fields
   const usedValues = [
     emailMatch && emailMatch[0], phones[0], phones[1],
     urlMatch && urlMatch[0], liMatch && liMatch[0], addrLine
@@ -232,7 +278,6 @@ function parseContactFields(text) {
     return true;
   });
 
-  // Name: 2–5 words, no digits, shortest match wins
   const nameCandidates = cleanLines
     .filter(l => { const w = l.split(/\s+/); return w.length >= 2 && w.length <= 5 && !/\d/.test(l); })
     .sort((a, b) => a.length - b.length);
@@ -250,7 +295,7 @@ function parseContactFields(text) {
 }
 
 
-// ── Review Panel ──────────────────────────────────────────────────────────────
+// ── Review Panel ───────────────────────────────────────────────────────────────
 $('rawToggle').addEventListener('click', () => {
   const panel = $('rawPanel');
   const btn   = $('rawToggle');
@@ -276,7 +321,7 @@ $('btnReScan').addEventListener('click', resetApp);
 $('btnScanAnother').addEventListener('click', resetApp);
 
 
-// ── vCard Preview ─────────────────────────────────────────────────────────────
+// ── vCard Preview ──────────────────────────────────────────────────────────────
 function buildVcardPreview() {
   const get = (id) => $(id).value.trim();
   const name = get('fName') || 'No Name';
@@ -305,11 +350,7 @@ function buildVcardPreview() {
 }
 
 
-// ── vCard Generation ──────────────────────────────────────────────────────────
-/**
- * Generates a vCard 3.0 string from the current form values.
- * @returns {string}
- */
+// ── vCard Generation ───────────────────────────────────────────────────────────
 function generateVcf() {
   const get   = (id) => $(id).value.trim();
   const name  = get('fName');
@@ -336,7 +377,7 @@ function generateVcf() {
 }
 
 
-// ── Export Actions ────────────────────────────────────────────────────────────
+// ── Export Actions ─────────────────────────────────────────────────────────────
 $('btnVcf').addEventListener('click', () => {
   const blob = new Blob([generateVcf()], { type: 'text/vcard;charset=utf-8' });
   const url  = URL.createObjectURL(blob);
